@@ -935,6 +935,13 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 			*dst_sec_identity = WORLD_IPV4_ID;
 		}
 
+		/* Signal userspace when the lookup resolved to WORLD identity,
+		 * indicating no specific /32 ipcache entry exists. This allows
+		 * on-demand resolution of the endpoint from a remote cluster.
+		 */
+		if (*dst_sec_identity == WORLD_IPV4_ID && cluster_id != 0)
+			send_signal_ipcache_miss(ctx, ip4->daddr, (__u16)cluster_id);
+
 		cilium_dbg(ctx, info ? DBG_IP_ID_MAP_SUCCEED4 : DBG_IP_ID_MAP_FAILED4,
 			   ip4->daddr, *dst_sec_identity);
 	}

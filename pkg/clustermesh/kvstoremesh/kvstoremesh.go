@@ -36,12 +36,18 @@ type Config struct {
 	GlobalReadyTimeout     time.Duration
 
 	DisableDrainOnDisconnection bool
+
+	// ClusterRegion is the region of this cluster. When set, kvstoremesh will
+	// filter remote ipcache entries with syncScope=regional that do not match
+	// this region, avoiding cross-region pod endpoint propagation.
+	ClusterRegion string
 }
 
 var DefaultConfig = Config{
 	PerClusterReadyTimeout:      15 * time.Second,
 	GlobalReadyTimeout:          10 * time.Minute,
 	DisableDrainOnDisconnection: false,
+	ClusterRegion:               "",
 }
 
 func (def Config) Flags(flags *pflag.FlagSet) {
@@ -50,6 +56,8 @@ func (def Config) Flags(flags *pflag.FlagSet) {
 
 	flags.Bool("disable-drain-on-disconnection", def.DisableDrainOnDisconnection, "Do not drain cached data upon cluster disconnection")
 	flags.MarkHidden("disable-drain-on-disconnection")
+
+	flags.String("cluster-region", def.ClusterRegion, "Region of this cluster; used to filter remote ipcache entries with syncScope=regional")
 }
 
 // KVStoreMesh is a cache of multiple remote clusters
@@ -64,6 +72,16 @@ type KVStoreMesh struct {
 	storeFactory store.Factory
 
 	logger logrus.FieldLogger
+
+	// regionCache maps node IPs to their region. Used by the regional
+	// endpoint filter to decide whether to accept ipcache entries with
+	// syncScope=regional. Populated from CiliumNode data flowing through
+	// the nodes reflector.
+	// TODO: Hook into the nodes reflector OnUpdate callback to populate
+	// this cache automatically. For now, it is created once and relies on
+	// manual/static population or remains empty (accepting all entries
+	// when the host region is unknown).
+	regionCache *NodeRegionCache
 
 	// clock allows to override the clock for testing purposes
 	clock clock.Clock
@@ -91,6 +109,7 @@ func newKVStoreMesh(lc cell.Lifecycle, params params) *KVStoreMesh {
 		backendPromise: params.BackendPromise,
 		storeFactory:   params.StoreFactory,
 		logger:         params.Logger,
+		regionCache:    NewNodeRegionCache(params.Logger),
 		clock:          clock.RealClock{},
 	}
 	km.common = common.NewClusterMesh(common.Configuration{
@@ -150,6 +169,17 @@ func (km *KVStoreMesh) newRemoteCluster(name string, status common.StatusFunc) c
 	synced := newSynced()
 	defer synced.resources.Stop()
 
+	// Build an optional regional filter for the ipcache reflector.
+	// When ClusterRegion is configured, entries with syncScope=regional from
+	// nodes outside our region are dropped. The NodeRegionCache is populated
+	// from CiliumNode data; until it is fully wired (TODO), entries whose
+	// host region is unknown are accepted to avoid false negatives.
+	var ipcacheFilters []func(store.Key) bool
+	if km.config.ClusterRegion != "" {
+		ipcacheFilters = append(ipcacheFilters,
+			NewRegionalEndpointFilter(km.config.ClusterRegion, km.regionCache, km.logger.WithField(logfields.ClusterName, name)))
+	}
+
 	rc := &remoteCluster{
 		name:         name,
 		localBackend: km.backend,
@@ -160,7 +190,7 @@ func (km *KVStoreMesh) newRemoteCluster(name string, status common.StatusFunc) c
 		services:       newReflector(km.backend, name, serviceStore.ServiceStorePrefix, km.storeFactory, synced.resources),
 		serviceExports: newReflector(km.backend, name, mcsapitypes.ServiceExportStorePrefix, km.storeFactory, synced.resources),
 		identities:     newReflector(km.backend, name, identityCache.IdentitiesPath, km.storeFactory, synced.resources),
-		ipcache:        newReflector(km.backend, name, ipcache.IPIdentitiesPath, km.storeFactory, synced.resources),
+		ipcache:        newReflector(km.backend, name, ipcache.IPIdentitiesPath, km.storeFactory, synced.resources, ipcacheFilters...),
 		status:         status,
 		storeFactory:   km.storeFactory,
 		synced:         synced,

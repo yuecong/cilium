@@ -294,9 +294,15 @@ type syncer struct {
 	store.SyncStore
 	syncedDone lock.DoneFunc
 	isSynced   *atomic.Bool
+	filter     func(store.Key) bool
 }
 
 func (o *syncer) OnUpdate(key store.Key) {
+	if o.filter != nil && !o.filter(key) {
+		// Key does not pass the filter — remove it if previously synced.
+		o.DeleteKey(context.Background(), key)
+		return
+	}
 	o.UpsertKey(context.Background(), key)
 }
 
@@ -312,13 +318,18 @@ func (o *syncer) OnSync(ctx context.Context) {
 	}
 }
 
-func newReflector(local kvstore.BackendOperations, cluster, prefix string, factory store.Factory, synced *resources) reflector {
+func newReflector(local kvstore.BackendOperations, cluster, prefix string, factory store.Factory, synced *resources, filters ...func(store.Key) bool) reflector {
 	prefix = kvstore.StateToCachePrefix(prefix)
+	var filter func(store.Key) bool
+	if len(filters) > 0 {
+		filter = filters[0]
+	}
 	syncer := syncer{
 		SyncStore: factory.NewSyncStore(cluster, local, path.Join(prefix, cluster),
 			store.WSSWithSyncedKeyOverride(prefix)),
 		syncedDone: synced.Add(),
 		isSynced:   &atomic.Bool{},
+		filter:     filter,
 	}
 
 	watcher := factory.NewWatchStore(cluster, store.KVPairCreator, &syncer,

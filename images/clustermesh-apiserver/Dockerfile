@@ -69,8 +69,8 @@ COPY --from=gops /out/${TARGETOS}/${TARGETARCH}/bin/gops /bin/gops
 # While the etcd image uses /usr/local/bin, we're moving it to /usr/bin to keep consistency with the rest of our images.
 # We also don't grab the etcdctl or etcdutl binaries, as we don't need them for our application.
 COPY --from=etcd /usr/local/bin/etcd /usr/bin/etcd
-COPY --from=builder /out/${TARGETOS}/${TARGETARCH}/etcd-config.yaml /var/lib/cilium/etcd-config.yaml
-COPY --from=builder /out/${TARGETOS}/${TARGETARCH}/usr/bin/clustermesh-apiserver /usr/bin/clustermesh-apiserver
+COPY --chown=65532:65532 --from=builder /out/${TARGETOS}/${TARGETARCH}/etcd-config.yaml /var/lib/cilium/etcd-config.yaml
+COPY --chown=65532:65532 --from=builder /out/${TARGETOS}/${TARGETARCH}/usr/bin/clustermesh-apiserver /usr/bin/clustermesh-apiserver
 COPY --from=builder /out/${TARGETOS}/${TARGETARCH}/LICENSE.all /LICENSE.all
 
 # Configure gops to use a temporary directory, to prevent permission

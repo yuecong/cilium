@@ -18,11 +18,18 @@ enum {
 	SIGNAL_NAT_FILL_UP = 0,
 	SIGNAL_CT_FILL_UP,
 	SIGNAL_AUTH_REQUIRED,
+	SIGNAL_IPCACHE_MISS,
 };
 
 enum {
 	SIGNAL_PROTO_V4 = 0,
 	SIGNAL_PROTO_V6,
+};
+
+struct ipcache_miss_msg {
+	__u32 dst_ip;
+	__u16 cluster_id;
+	__u16 pad;
 };
 
 struct signal_msg {
@@ -32,6 +39,7 @@ struct signal_msg {
 			__u32 proto;
 		};
 		struct auth_key auth;
+		struct ipcache_miss_msg ipcache_miss;
 	};
 };
 
@@ -66,4 +74,16 @@ static __always_inline void send_signal_auth_required(struct __ctx_buff *ctx,
 						      const struct auth_key *auth)
 {
 	SEND_SIGNAL(ctx, SIGNAL_AUTH_REQUIRED, auth, *auth);
+}
+
+static __always_inline void send_signal_ipcache_miss(struct __ctx_buff *ctx,
+						     __u32 dst_ip,
+						     __u16 cluster_id)
+{
+	struct ipcache_miss_msg miss = {
+		.dst_ip     = dst_ip,
+		.cluster_id = cluster_id,
+		.pad        = 0,
+	};
+	SEND_SIGNAL(ctx, SIGNAL_IPCACHE_MISS, ipcache_miss, miss);
 }

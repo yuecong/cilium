@@ -1,0 +1,111 @@
+#! --cluster-id=3 --cluster-name=cluster3
+
+hive/start
+
+# Add namespace
+k8s/add namespace-1.yaml
+
+# Add endpoint with sync-scope annotation
+k8s/add endpoint-regional.yaml
+
+kvstore/list -o plain cilium/synced synced.actual
+* grep -q '^# cilium/synced/cluster3/cilium/state/ip/v1$' synced.actual
+
+# The kvstore entry should contain "syncScope":"regional"
+kvstore/list -o json cilium/state/ip ips-regional.actual
+* cmp ips-regional.actual ips-regional.expected
+
+# Add endpoint without sync-scope annotation (default/global)
+k8s/add endpoint-global.yaml
+
+kvstore/list -o json cilium/state/ip ips-both.actual
+* cmp ips-both.actual ips-both.expected
+
+# ---
+
+-- namespace-1.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+
+-- endpoint-regional.yaml --
+apiVersion: cilium.io/v2
+kind: CiliumEndpoint
+metadata:
+  name: cep-regional
+  namespace: default
+  annotations:
+    clustermesh.cilium.io/sync-scope: "regional"
+status:
+  id: 2000
+  identity:
+    id: 200000
+    labels:
+    - k8s:app=regional
+  networking:
+    addressing:
+    - ipv4: 10.1.0.1
+    node: 172.18.0.3
+  service-account: default
+  state: ready
+
+-- endpoint-global.yaml --
+apiVersion: cilium.io/v2
+kind: CiliumEndpoint
+metadata:
+  name: cep-global
+  namespace: default
+status:
+  id: 2001
+  identity:
+    id: 200001
+    labels:
+    - k8s:app=global
+  networking:
+    addressing:
+    - ipv4: 10.1.0.2
+    node: 172.18.0.3
+  service-account: default
+  state: ready
+
+-- ips-regional.expected --
+# cilium/state/ip/v1/default/10.1.0.1
+{
+  "IP": "10.1.0.1",
+  "Mask": null,
+  "HostIP": "172.18.0.3",
+  "ID": 200000,
+  "Key": 0,
+  "Metadata": "",
+  "K8sNamespace": "default",
+  "K8sPodName": "cep-regional",
+  "K8sServiceAccount": "default",
+  "SyncScope": "regional"
+}
+-- ips-both.expected --
+# cilium/state/ip/v1/default/10.1.0.1
+{
+  "IP": "10.1.0.1",
+  "Mask": null,
+  "HostIP": "172.18.0.3",
+  "ID": 200000,
+  "Key": 0,
+  "Metadata": "",
+  "K8sNamespace": "default",
+  "K8sPodName": "cep-regional",
+  "K8sServiceAccount": "default",
+  "SyncScope": "regional"
+}
+# cilium/state/ip/v1/default/10.1.0.2
+{
+  "IP": "10.1.0.2",
+  "Mask": null,
+  "HostIP": "172.18.0.3",
+  "ID": 200001,
+  "Key": 0,
+  "Metadata": "",
+  "K8sNamespace": "default",
+  "K8sPodName": "cep-global",
+  "K8sServiceAccount": "default"
+}

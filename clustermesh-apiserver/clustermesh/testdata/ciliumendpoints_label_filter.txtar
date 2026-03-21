@@ -1,0 +1,142 @@
+#! --cluster-id=3 --cluster-name=cluster3 --enable-sync-label-filter=true
+
+hive/start
+
+# Add namespace
+k8s/add namespace-1.yaml
+
+# Add endpoint WITHOUT sync label — should NOT appear in kvstore
+k8s/add endpoint-no-label.yaml
+
+# Wait and confirm the synced key exists but no IPs
+kvstore/list -o plain cilium/synced synced.actual
+* grep -q '^# cilium/synced/cluster3/cilium/state/ip/v1$' synced.actual
+
+kvstore/list -o json cilium/state/ip ips-none.actual
+* empty ips-none.actual
+
+# Add endpoint WITH sync label — should appear in kvstore
+k8s/add endpoint-with-label.yaml
+
+kvstore/list -o json cilium/state/ip ips-labeled.actual
+* cmp ips-labeled.actual ips-labeled.expected
+
+# Add endpoint with sync=false — should NOT appear
+k8s/add endpoint-label-false.yaml
+
+kvstore/list -o json cilium/state/ip ips-still-labeled.actual
+* cmp ips-still-labeled.actual ips-labeled.expected
+
+# Update endpoint-with-label to remove the sync label — should be deleted
+k8s/update endpoint-with-label-removed.yaml
+
+kvstore/list -o json cilium/state/ip ips-after-remove.actual
+* empty ips-after-remove.actual
+
+# Re-add the label — should reappear
+k8s/update endpoint-with-label.yaml
+
+kvstore/list -o json cilium/state/ip ips-readded.actual
+* cmp ips-readded.actual ips-labeled.expected
+
+# ---
+
+-- namespace-1.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+
+-- endpoint-no-label.yaml --
+apiVersion: cilium.io/v2
+kind: CiliumEndpoint
+metadata:
+  name: cep-no-label
+  namespace: default
+status:
+  id: 1000
+  identity:
+    id: 100000
+    labels:
+    - k8s:app=nolabel
+  networking:
+    addressing:
+    - ipv4: 10.0.0.1
+    node: 172.18.0.3
+  service-account: default
+  state: ready
+
+-- endpoint-with-label.yaml --
+apiVersion: cilium.io/v2
+kind: CiliumEndpoint
+metadata:
+  name: cep-with-label
+  namespace: default
+  labels:
+    clustermesh.cilium.io/sync: "true"
+status:
+  id: 1001
+  identity:
+    id: 100001
+    labels:
+    - k8s:app=labeled
+  networking:
+    addressing:
+    - ipv4: 10.0.0.2
+    node: 172.18.0.3
+  service-account: default
+  state: ready
+
+-- endpoint-with-label-removed.yaml --
+apiVersion: cilium.io/v2
+kind: CiliumEndpoint
+metadata:
+  name: cep-with-label
+  namespace: default
+status:
+  id: 1001
+  identity:
+    id: 100001
+    labels:
+    - k8s:app=labeled
+  networking:
+    addressing:
+    - ipv4: 10.0.0.2
+    node: 172.18.0.3
+  service-account: default
+  state: ready
+
+-- endpoint-label-false.yaml --
+apiVersion: cilium.io/v2
+kind: CiliumEndpoint
+metadata:
+  name: cep-label-false
+  namespace: default
+  labels:
+    clustermesh.cilium.io/sync: "false"
+status:
+  id: 1002
+  identity:
+    id: 100002
+    labels:
+    - k8s:app=labelfalse
+  networking:
+    addressing:
+    - ipv4: 10.0.0.3
+    node: 172.18.0.3
+  service-account: default
+  state: ready
+
+-- ips-labeled.expected --
+# cilium/state/ip/v1/default/10.0.0.2
+{
+  "IP": "10.0.0.2",
+  "Mask": null,
+  "HostIP": "172.18.0.3",
+  "ID": 100001,
+  "Key": 0,
+  "Metadata": "",
+  "K8sNamespace": "default",
+  "K8sPodName": "cep-with-label",
+  "K8sServiceAccount": "default"
+}

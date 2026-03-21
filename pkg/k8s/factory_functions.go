@@ -270,10 +270,11 @@ func TransformToCiliumEndpoint(obj interface{}) (interface{}, error) {
 				Namespace:       concreteObj.ObjectMeta.Namespace,
 				UID:             concreteObj.ObjectMeta.UID,
 				ResourceVersion: concreteObj.ObjectMeta.ResourceVersion,
-				// We don't need to store labels nor annotations because
-				// they are not used by the CEP handlers.
-				Labels:      nil,
-				Annotations: nil,
+				// Preserve labels and annotations for cross-cluster sync
+				// filtering (clustermesh.cilium.io/sync label) and sync-scope
+				// annotation propagation.
+				Labels:      concreteObj.ObjectMeta.Labels,
+				Annotations: concreteObj.ObjectMeta.Annotations,
 			},
 			Encryption: func() *cilium_v2.EncryptionSpec {
 				enc := concreteObj.Status.Encryption

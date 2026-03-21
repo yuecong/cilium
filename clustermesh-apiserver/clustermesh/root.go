@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"os"
 	"path"
 	"sync"
 
@@ -47,6 +48,24 @@ import (
 var (
 	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "clustermesh-apiserver")
 )
+
+const (
+	// LabelSync is the label key used to select which CiliumEndpoints are
+	// synced to the clustermesh kvstore. When sync-label filtering is enabled,
+	// only endpoints whose owning Pod carries this label with value "true"
+	// will be propagated.
+	LabelSync = "clustermesh.cilium.io/sync"
+
+	// AnnotationSyncScope is the annotation key that controls the visibility
+	// scope of a synced endpoint. Its value (e.g. "global", "regional") is
+	// propagated into the IPIdentityPair stored in the kvstore.
+	AnnotationSyncScope = "clustermesh.cilium.io/sync-scope"
+)
+
+// EnableSyncLabelFilter controls whether the clustermesh-apiserver filters
+// endpoints based on the LabelSync label. Defaults to false; can be enabled
+// via CILIUM_ENABLE_SYNC_LABEL_FILTER=true environment variable.
+var EnableSyncLabelFilter = false
 
 func NewCmd(h *hive.Hive) *cobra.Command {
 	rootCmd := &cobra.Command{
@@ -235,28 +254,55 @@ func (ns *nodeSynchronizer) synced(ctx context.Context) error {
 type ipmap map[string]struct{}
 
 type endpointSynchronizer struct {
-	store        store.SyncStore
-	cache        map[string]ipmap
-	syncCallback func(context.Context)
+	store         store.SyncStore
+	cache         map[string]ipmap
+	syncCallback  func(context.Context)
+	labelFiltered bool
 }
 
-func newEndpointSynchronizer(ctx context.Context, cinfo cmtypes.ClusterInfo, backend kvstore.BackendOperations, factory store.Factory, syncCallback func(context.Context)) synchronizer {
+func newEndpointSynchronizer(ctx context.Context, cinfo cmtypes.ClusterInfo, backend kvstore.BackendOperations, factory store.Factory, syncCallback func(context.Context), labelFiltered bool) synchronizer {
 	endpointsStore := factory.NewSyncStore(cinfo.Name, backend,
 		path.Join(ipcache.IPIdentitiesPath, ipcache.DefaultAddressSpace),
 		store.WSSWithSyncedKeyOverride(ipcache.IPIdentitiesPath))
 	go endpointsStore.Run(ctx)
 
 	return &endpointSynchronizer{
-		store:        endpointsStore,
-		cache:        make(map[string]ipmap),
-		syncCallback: syncCallback,
+		store:         endpointsStore,
+		cache:         make(map[string]ipmap),
+		syncCallback:  syncCallback,
+		labelFiltered: labelFiltered,
 	}
 }
 
 func (es *endpointSynchronizer) upsert(ctx context.Context, key resource.Key, obj runtime.Object) error {
 	endpoint := obj.(*types.CiliumEndpoint)
+
+	// If label filtering is enabled, only sync endpoints whose owning Pod
+	// carries the clustermesh.cilium.io/sync="true" label. The label is
+	// expected to be propagated to the CiliumEndpoint object by the agent.
+	if es.labelFiltered {
+		if endpoint.Labels == nil || endpoint.Labels[LabelSync] != "true" {
+			// Endpoint should not be synced — delete any previously
+			// synced IPs and return.
+			return es.delete(ctx, key)
+		}
+	}
+
 	ips := make(ipmap)
 	stale := es.cache[key.String()]
+
+	// Determine sync scope from annotation on the CiliumEndpoint.
+	syncScope := ""
+	if endpoint.Annotations != nil {
+		syncScope = endpoint.Annotations[AnnotationSyncScope]
+	}
+	if syncScope != "" && syncScope != "regional" && syncScope != "global" {
+		log.WithFields(logrus.Fields{
+			logfields.Endpoint: key.String(),
+			"syncScope":        syncScope,
+		}).Warning("Unrecognized sync-scope annotation value, skipping endpoint propagation")
+		return nil
+	}
 
 	if n := endpoint.Networking; n != nil {
 		for _, address := range n.Addressing {
@@ -279,6 +325,13 @@ func (es *endpointSynchronizer) upsert(ctx context.Context, key resource.Key, ob
 
 				if endpoint.Encryption != nil {
 					entry.Key = uint8(endpoint.Encryption.Key)
+				}
+
+				// Propagate sync scope into the IPIdentityPair so that
+				// downstream consumers (e.g. kvstoremesh regional filter)
+				// can act on it.
+				if syncScope != "" {
+					entry.SyncScope = syncScope
 				}
 
 				scopedLog.Info("Upserting endpoint in etcd")
@@ -375,10 +428,16 @@ func startServer(
 		log.WithError(err).Fatal("Unable to set local cluster config on kvstore")
 	}
 
+	// Check whether sync-label filtering is enabled via environment variable.
+	labelFiltered := EnableSyncLabelFilter || os.Getenv("CILIUM_ENABLE_SYNC_LABEL_FILTER") == "true"
+	if labelFiltered {
+		log.Info("Sync-label filtering enabled: only CiliumEndpoints with clustermesh.cilium.io/sync=true will be synced")
+	}
+
 	ctx := context.Background()
 	go synchronize(ctx, resources.CiliumIdentities, newIdentitySynchronizer(ctx, cinfo, backend, factory, syncState.WaitForResource()))
 	go synchronize(ctx, resources.CiliumNodes, newNodeSynchronizer(ctx, cinfo, backend, factory, syncState.WaitForResource()))
-	go synchronize(ctx, resources.CiliumSlimEndpoints, newEndpointSynchronizer(ctx, cinfo, backend, factory, syncState.WaitForResource()))
+	go synchronize(ctx, resources.CiliumSlimEndpoints, newEndpointSynchronizer(ctx, cinfo, backend, factory, syncState.WaitForResource(), labelFiltered))
 	operatorWatchers.StartSynchronizingServices(ctx, &sync.WaitGroup{}, operatorWatchers.ServiceSyncParameters{
 		ClusterInfo:  cinfo,
 		Clientset:    clientset,

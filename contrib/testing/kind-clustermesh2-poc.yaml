@@ -1,0 +1,17 @@
+# Overlay for cross-region pod mesh POC on cluster2.
+# Use with: helm upgrade cilium ... -f kind-clustermesh2.yaml -f kind-clustermesh2-poc.yaml
+#
+# Enables:
+#   - Per-workload sync label filtering on clustermesh-apiserver
+#   - CiliumEndpointSlice disabled (POC requires CiliumEndpoint path)
+ciliumEndpointSlice:
+  enabled: false
+clustermesh:
+  apiserver:
+    extraArgs:
+      - --enable-sync-label-filter=true
+    kvstoremesh:
+      extraArgs: []
+      # For regional filtering, uncomment:
+      # extraArgs:
+      #   - --cluster-region=us-west-2
